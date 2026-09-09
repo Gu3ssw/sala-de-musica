@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pôr música</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  .top { padding: 1.1rem 1rem .9rem; border-bottom: 1px solid var(--line); }
+  .top .code { color: var(--accent); font-weight: 600; letter-spacing: .12em; }
+  .nowline { margin-top: .55rem; font-size: .9rem; line-height: 1.4; }
+  .add { padding: 1rem; display: grid; gap: .6rem; border-bottom: 1px solid var(--line); }
+  .results { list-style: none; margin: 0; padding: 0; }
+  .results li { display: grid; grid-template-columns: 1fr auto; gap: .5rem; align-items: center; padding: .6rem 0; }
+  .results li + li { border-top: 1px solid rgba(38,49,79,.55); }
+  .results .name { font-size: .9rem; line-height: 1.3; }
+  .results .by { font-size: .76rem; color: var(--muted); margin-top: .15rem; }
+  .bar { display: flex; gap: .5rem; padding: .8rem 1rem; border-bottom: 1px solid var(--line); }
+  .bar button { flex: 1; }
+  .name-field { padding: 0 1rem 1rem; }
+  h2 { font-size: .9rem; padding: 1rem 1rem .3rem; color: var(--muted); font-weight: 500; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="top">
+    <p class="small muted">Sala <span class="code" id="code">····</span> · <span id="status">a ligar…</span></p>
+    <p class="nowline" id="now">—</p>
+  </div>
+
+  <div class="bar">
+    <button id="prev">&#9664;&#9664;</button>
+    <button id="toggle">&#9654; / &#10073;&#10073;</button>
+    <button id="next">&#9654;&#9654;</button>
+  </div>
+
+  <div class="add">
+    <input type="text" id="link" placeholder="Cola aqui o link do YouTube" autocomplete="off" inputmode="url">
+    <button class="primary" id="addLink">Pôr na fila</button>
+    <input type="search" id="query" placeholder="Ou procura pelo nome…" autocomplete="off">
+    <p class="small muted" id="searchNote"></p>
+    <ul class="results" id="results"></ul>
+  </div>
+
+  <div class="name-field">
+    <p class="small muted" style="margin:.9rem 0 .4rem">O teu nome, para se saber a culpa de quem é</p>
+    <input type="text" id="who" placeholder="o teu nome" maxlength="20" autocomplete="off">
+  </div>
+
+  <h2>Na fila</h2>
+  <ol class="queue" id="queue"></ol>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script>
+const roomId = (new URLSearchParams(location.search).get("room") || "").toUpperCase();
+const el = id => document.getElementById(id);
+
+let socket = null;
+let queue = [];
+let index = 0;
+let playing = false;
+
+el("who").value = localStorage.getItem("who") || "";
+el("who").oninput = () => localStorage.setItem("who", el("who").value.trim());
+const who = () => el("who").value.trim() || "anónimo";
+
+/* ---------- ligação ---------- */
+
+function connect() {
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  socket = new WebSocket(`${scheme}://${location.host}/ws/room/${roomId}`);
+  socket.onopen = () => { el("status").textContent = "ligado"; };
+  socket.onclose = () => { el("status").textContent = "sem ligação"; setTimeout(connect, 3000); };
+  socket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === "state") applyState(data);
+    else if (data.type === "toast" || data.type === "error") toast(data.message);
+  };
+}
+
+function send(payload) {
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
+  else toast("Sem ligação à sala.");
+}
+
+function applyState(state) {
+  queue = state.queue;
+  index = state.index;
+  playing = state.playing;
+  el("code").textContent = state.roomId;
+  el("status").textContent = state.hasPlayer
+    ? (playing ? "a tocar" : "em pausa")
+    : "nenhum aparelho a tocar";
+  el("toggle").innerHTML = playing ? "&#10073;&#10073;" : "&#9654;";
+  el("toggle").disabled = !state.hasPlayer;
+
+  const track = queue[index];
+  el("now").textContent = track
+    ? `${track.title}${track.channel ? " — " + track.channel : ""}`
+    : "Fila vazia. Põe a primeira.";
+
+  if (state.searchesLeft !== undefined) {
+    el("searchNote").textContent = state.searchesLeft > 0
+      ? `${state.searchesLeft} pesquisas disponíveis hoje. Colar o link não gasta nenhuma.`
+      : "Pesquisas esgotadas hoje. Cola o link, que esse caminho é livre.";
+  }
+  renderQueue();
+}
+
+/* ---------- adicionar ---------- */
+
+el("addLink").onclick = () => {
+  const value = el("link").value.trim();
+  if (!value) return;
+  send({ type: "add", value, who: who() });
+  el("link").value = "";
+};
+el("link").addEventListener("keydown", e => { if (e.key === "Enter") el("addLink").click(); });
+
+let searchTimer = null;
+el("query").oninput = () => {
+  clearTimeout(searchTimer);
+  const term = el("query").value.trim();
+  if (term.length < 2) { el("results").replaceChildren(); return; }
+  searchTimer = setTimeout(() => runSearch(term), 600);
+};
+
+async function runSearch(term) {
+  try {
+    const response = await fetch(`/api/search?q=${encodeURIComponent(term)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "A pesquisa falhou");
+    el("searchNote").textContent = `${data.searchesLeft} pesquisas disponíveis hoje.`;
+    el("results").replaceChildren(...data.results.map(track => {
+      const row = document.createElement("li");
+      row.innerHTML = '<div><div class="name"></div><div class="by"></div></div><button>+</button>';
+      row.querySelector(".name").textContent = track.title;
+      row.querySelector(".by").textContent = track.channel;
+      row.querySelector("button").onclick = () => {
+        send({ type: "addTrack", track, who: who() });
+        el("query").value = "";
+        el("results").replaceChildren();
+      };
+      return row;
+    }));
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+/* ---------- controlos e fila ---------- */
+
+el("prev").onclick = () => send({ type: "command", action: "prev" });
+el("next").onclick = () => send({ type: "command", action: "next" });
+el("toggle").onclick = () => send({ type: "command", action: playing ? "pause" : "play" });
+
+function renderQueue() {
+  el("queue").replaceChildren(...queue.map((track, position) => {
+    const row = document.createElement("li");
+    row.setAttribute("aria-current", String(position === index));
+    row.innerHTML = '<span class="idx"></span><span class="name"></span><button class="drop" aria-label="Tirar da fila">&times;</button><span class="by"></span>';
+    row.querySelector(".idx").textContent = position + 1;
+    row.querySelector(".name").textContent = track.title;
+    row.querySelector(".by").textContent =
+      [track.channel, track.addedBy && `posta por ${track.addedBy}`].filter(Boolean).join(" · ");
+
+    const drop = row.querySelector(".drop");
+    if (position === index) drop.remove();
+    else drop.onclick = (event) => { event.stopPropagation(); send({ type: "remove", videoId: track.videoId }); };
+
+    row.querySelector(".name").onclick = () => send({ type: "command", action: "playIndex", index: position });
+    return row;
+  }));
+}
+
+let toastTimer = null;
+function toast(message) {
+  if (!message) return;
+  el("toast").textContent = message;
+  el("toast").hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el("toast").hidden = true; }, 3500);
+}
+
+if (!roomId) {
+  el("now").textContent = "Falta o código da sala.";
+} else {
+  el("code").textContent = roomId;
+  connect();
+}
+</script>
+</body>
+</html>

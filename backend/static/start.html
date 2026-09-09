@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sala de música</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  .shell { padding: 2rem 1.25rem; }
+  h1 { font-size: 1.6rem; line-height: 1.2; }
+  .block { margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
+  .block h2 { font-size: 1rem; margin-bottom: .35rem; }
+  .field { margin-top: .9rem; display: grid; gap: .6rem; }
+  #code { text-transform: uppercase; letter-spacing: .2em; font-size: 1.1rem; text-align: center; }
+  .err { color: var(--accent); font-size: .85rem; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <h1>Uma fila de música<br>que todos mexem</h1>
+  <p class="small muted" style="margin-top:.7rem">
+    Um aparelho toca com o ecrã aceso. Os outros entram pelo código e vão pondo músicas na fila.
+  </p>
+
+  <div class="block">
+    <h2>Abrir uma sala</h2>
+    <p class="small muted">Podes começar de uma playlist do YouTube ou com a fila vazia.</p>
+    <div class="field">
+      <input type="text" id="playlist" placeholder="Link da playlist (opcional)" autocomplete="off">
+      <button class="primary" id="create">Abrir sala e tocar aqui</button>
+      <p class="err" id="createError"></p>
+    </div>
+  </div>
+
+  <div class="block">
+    <h2>Entrar numa sala</h2>
+    <p class="small muted">Pede o código de quatro letras a quem abriu a sala.</p>
+    <div class="field">
+      <input type="text" id="code" placeholder="ABCD" maxlength="4" autocomplete="off">
+      <button id="join">Entrar e pôr músicas</button>
+      <p class="err" id="joinError"></p>
+    </div>
+  </div>
+</div>
+
+<script>
+const playlist = document.getElementById("playlist");
+const code = document.getElementById("code");
+const createError = document.getElementById("createError");
+const joinError = document.getElementById("joinError");
+const createButton = document.getElementById("create");
+
+createButton.onclick = async () => {
+  createError.textContent = "";
+  createButton.disabled = true;
+  createButton.textContent = "A ler a playlist…";
+  try {
+    const response = await fetch("/api/rooms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ playlist: playlist.value.trim() || null }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Não consegui abrir a sala");
+    location.href = `/player?room=${data.roomId}`;
+  } catch (error) {
+    createError.textContent = error.message;
+    createButton.disabled = false;
+    createButton.textContent = "Abrir sala e tocar aqui";
+  }
+};
+
+document.getElementById("join").onclick = () => {
+  const value = code.value.trim().toUpperCase();
+  if (value.length !== 4) {
+    joinError.textContent = "O código tem quatro caracteres.";
+    return;
+  }
+  location.href = `/remote?room=${value}`;
+};
+
+code.addEventListener("keydown", (event) => { if (event.key === "Enter") document.getElementById("join").click(); });
+playlist.addEventListener("keydown", (event) => { if (event.key === "Enter") createButton.click(); });
+</script>
+</body>
+</html>

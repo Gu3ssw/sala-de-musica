@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A tocar</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  .stage { position: relative; background: #000; aspect-ratio: 16 / 9; }
+  .stage iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .gate {
+    position: absolute; inset: 0; border: 0; padding: 1rem;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .8rem;
+    background: var(--base); color: var(--text); font: inherit; text-align: center;
+  }
+  .gate[hidden] { display: none; }
+  .gate span.icon {
+    width: 64px; height: 64px; border-radius: 50%; background: var(--accent);
+    color: var(--accent-ink); display: grid; place-items: center; font-size: 1.4rem; padding-left: 4px;
+  }
+  .controls { display: flex; gap: .5rem; padding: .8rem 1rem; border-bottom: 1px solid var(--line); }
+  .controls button { min-width: 48px; height: 44px; }
+  .controls #toggle { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); min-width: 60px; }
+  .now { padding: 1rem 1rem .35rem; }
+  .now h1 { font-size: 1.05rem; line-height: 1.35; }
+  .now p { margin-top: .25rem; font-size: .85rem; color: var(--muted); }
+
+  .join {
+    margin: 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: var(--radius);
+    display: flex; gap: 1rem; align-items: center; background: var(--surface);
+  }
+  .join .code { font-size: 2rem; letter-spacing: .18em; font-weight: 600; color: var(--accent); }
+  .join #qr { width: 92px; height: 92px; background: #fff; border-radius: 6px; padding: 6px; flex: none; }
+  .join #qr:empty { display: none; }
+  .warn { margin: 0 1rem 1rem; font-size: .8rem; color: var(--muted); line-height: 1.45; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="stage">
+    <div id="frame"></div>
+    <button class="gate" id="gate">
+      <span class="icon">&#9654;</span>
+      <span class="small muted" style="max-width:26ch">Toca para arrancar. Depois disto o telemóvel deixa passar as faixas sozinho.</span>
+    </button>
+  </div>
+
+  <div class="controls">
+    <button id="prev" aria-label="Anterior">&#9664;&#9664;</button>
+    <button id="toggle" aria-label="Tocar ou pausar">&#9654;</button>
+    <button id="next" aria-label="Seguinte">&#9654;&#9654;</button>
+    <span class="grow"></span>
+    <button id="shuffle" aria-label="Embaralhar o resto da fila">&#8646;</button>
+  </div>
+
+  <div class="now">
+    <h1 id="title">Fila vazia</h1>
+    <p id="channel">Manda o código aos teus amigos para eles começarem a pôr músicas.</p>
+  </div>
+
+  <div class="join">
+    <div class="grow">
+      <p class="small muted">Entram em <span id="host"></span>/ com o código</p>
+      <p class="code" id="code">····</p>
+      <p class="small muted" id="people">ninguém ligado ainda</p>
+    </div>
+    <div id="qr"></div>
+  </div>
+
+  <p class="warn" id="warn"></p>
+  <ol class="queue" id="queue"></ol>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+const roomId = (new URLSearchParams(location.search).get("room") || "").toUpperCase();
+const remoteUrl = `${location.origin}/remote?room=${roomId}`;
+
+let socket = null;
+let player = null;
+let apiReady = false;
+let queue = [];
+let index = 0;
+let currentVideoId = null;
+let unlocked = false;
+let playing = false;
+let wakeLock = null;
+
+const el = id => document.getElementById(id);
+
+/* ---------- ligação ---------- */
+
+function connect() {
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  socket = new WebSocket(`${scheme}://${location.host}/ws/room/${roomId}?role=player`);
+
+  socket.onclose = () => {
+    el("people").textContent = "sem ligação ao servidor, a tentar de novo…";
+    setTimeout(connect, 3000);
+  };
+
+  socket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === "state") applyState(data);
+    else if (data.type === "command") runCommand(data);
+    else if (data.type === "toast") toast(data.message);
+    else if (data.type === "error") toast(data.message);
+  };
+}
+
+function send(payload) {
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
+}
+
+function applyState(state) {
+  queue = state.queue;
+  index = state.index;
+
+  el("code").textContent = state.roomId;
+  el("people").textContent = state.listeners === 1
+    ? "1 pessoa ligada"
+    : `${state.listeners} pessoas ligadas`;
+  el("warn").textContent = state.notice || "";
+
+  renderQueue();
+  const track = queue[index];
+  if (!track) {
+    el("title").textContent = "Fila vazia";
+    return;
+  }
+  el("title").textContent = track.title;
+  el("channel").textContent = [track.channel, track.addedBy && `posta por ${track.addedBy}`]
+    .filter(Boolean).join(" · ");
+
+  if (track.videoId !== currentVideoId) load(index, unlocked);
+}
+
+function runCommand({ action, index: target }) {
+  if (action === "next") skip(1);
+  else if (action === "prev") skip(-1);
+  else if (action === "play") { unlocked = true; el("gate").hidden = true; player?.playVideo(); }
+  else if (action === "pause") player?.pauseVideo();
+  else if (action === "playIndex" && Number.isInteger(target)) { unlocked = true; el("gate").hidden = true; load(target, true); }
+}
+
+/* ---------- player ---------- */
+
+window.onYouTubeIframeAPIReady = () => {
+  apiReady = true;
+  player = new YT.Player("frame", {
+    host: "https://www.youtube-nocookie.com",
+    playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+    events: {
+      onStateChange: (event) => {
+        playing = event.data === YT.PlayerState.PLAYING;
+        el("toggle").innerHTML = playing ? "&#10073;&#10073;" : "&#9654;";
+        if (playing) keepAwake();
+        send({ type: "nowPlaying", index, playing });
+        if (event.data === YT.PlayerState.ENDED) skip(1);
+      },
+      onError: () => { toast("faixa indisponível, a saltar"); skip(1); },
+    },
+  });
+  if (queue.length) load(index, false);
+};
+
+function load(target, autoplay) {
+  if (!apiReady || !player || !queue[target]) return;
+  index = target;
+  currentVideoId = queue[index].videoId;
+  autoplay ? player.loadVideoById(currentVideoId) : player.cueVideoById(currentVideoId);
+  send({ type: "nowPlaying", index, playing: autoplay });
+  renderQueue();
+}
+
+function skip(delta) {
+  if (!queue.length) return;
+  load((index + delta + queue.length) % queue.length, unlocked);
+}
+
+/* ---------- ecrã aceso ---------- */
+
+async function keepAwake() {
+  // Screen Wake Lock só funciona em contexto seguro: https ou localhost.
+  if (!("wakeLock" in navigator) || wakeLock) return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => { wakeLock = null; });
+  } catch {
+    el("warn").textContent =
+      "Não consegui impedir o ecrã de bloquear. Serve a página por HTTPS, ou põe o tempo de bloqueio no máximo nas definições.";
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && playing) keepAwake();
+});
+
+/* ---------- interface ---------- */
+
+function renderQueue() {
+  el("queue").replaceChildren(...queue.map((track, position) => {
+    const row = document.createElement("li");
+    row.className = "tappable";
+    row.setAttribute("aria-current", String(position === index));
+    row.innerHTML = '<span class="idx"></span><span class="name"></span><span></span><span class="by"></span>';
+    row.querySelector(".idx").textContent = position + 1;
+    row.querySelector(".name").textContent = track.title;
+    row.querySelector(".by").textContent =
+      [track.channel, track.addedBy && `posta por ${track.addedBy}`].filter(Boolean).join(" · ");
+    row.onclick = () => { unlocked = true; el("gate").hidden = true; load(position, true); };
+    return row;
+  }));
+}
+
+let toastTimer = null;
+function toast(message) {
+  if (!message) return;
+  el("toast").textContent = message;
+  el("toast").hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el("toast").hidden = true; }, 3500);
+}
+
+el("gate").onclick = () => {
+  unlocked = true;
+  el("gate").hidden = true;
+  keepAwake();
+  if (queue.length) load(index, true);
+};
+el("prev").onclick = () => skip(-1);
+el("next").onclick = () => skip(1);
+el("shuffle").onclick = () => send({ type: "shuffle" });
+el("toggle").onclick = () => {
+  unlocked = true;
+  el("gate").hidden = true;
+  playing ? player?.pauseVideo() : player?.playVideo();
+};
+
+el("host").textContent = location.host;
+el("code").textContent = roomId || "····";
+if (window.QRCode && roomId) {
+  new QRCode(el("qr"), { text: remoteUrl, width: 80, height: 80, colorDark: "#0e1626", colorLight: "#ffffff" });
+}
+
+if (!roomId) {
+  el("title").textContent = "Falta o código da sala";
+  el("channel").textContent = "Volta atrás e abre uma sala.";
+} else {
+  connect();
+}
+</script>
+</body>
+</html>

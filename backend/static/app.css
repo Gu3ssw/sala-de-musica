@@ -1,0 +1,90 @@
+:root {
+  --base: #0e1626;
+  --surface: #172038;
+  --raised: #1e2947;
+  --line: #26314f;
+  --text: #e8eaf2;
+  --muted: #8b95b4;
+  --accent: #f0a94c;
+  --accent-ink: #241703;
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--base);
+  color: var(--text);
+  font-family: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: contain;
+}
+
+h1, h2 { font-weight: 600; margin: 0; }
+p { margin: 0; }
+
+.shell { max-width: 560px; margin: 0 auto; padding-bottom: 3rem; }
+
+input[type="text"], input[type="search"] {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  padding: .7rem .8rem;
+}
+input::placeholder { color: var(--muted); }
+input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+
+button {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font: inherit;
+  padding: .65rem .9rem;
+  cursor: pointer;
+}
+button:active { transform: translateY(1px); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 500; }
+
+.row { display: flex; gap: .5rem; align-items: center; }
+.grow { flex: 1; }
+.muted { color: var(--muted); }
+.small { font-size: .82rem; line-height: 1.45; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 1.25rem; transform: translateX(-50%);
+  background: var(--raised); border: 1px solid var(--accent);
+  border-radius: var(--radius); padding: .65rem 1rem;
+  font-size: .85rem; max-width: 90vw; text-align: center;
+  transition: opacity .2s;
+}
+.toast[hidden] { display: none; }
+
+/* Fila de músicas, partilhada entre o aparelho e os telemóveis */
+ol.queue { list-style: none; margin: 0; padding: 0; }
+ol.queue li {
+  display: grid;
+  grid-template-columns: 2rem 1fr auto;
+  align-items: center;
+  gap: .15rem .6rem;
+  padding: .7rem 1rem;
+  border-left: 3px solid transparent;
+}
+ol.queue li + li { border-top: 1px solid rgba(38, 49, 79, .55); }
+ol.queue .idx { color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+ol.queue .name { font-size: .92rem; line-height: 1.35; }
+ol.queue .by { grid-column: 2; font-size: .76rem; color: var(--muted); margin-top: .15rem; }
+ol.queue .drop { background: none; border: 0; color: var(--muted); padding: .35rem .5rem; font-size: 1.1rem; }
+ol.queue li[aria-current="true"] { border-left-color: var(--accent); background: rgba(240, 169, 76, .07); }
+ol.queue li[aria-current="true"] .idx, ol.queue li[aria-current="true"] .name { color: var(--accent); }
+ol.queue li.tappable { cursor: pointer; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
