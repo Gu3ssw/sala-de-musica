@@ -89,6 +89,7 @@ let index = 0;
 let currentVideoId = null;
 let unlocked = false;
 let playing = false;
+let errorStreak = 0;
 let wakeLock = null;
 
 const el = id => document.getElementById(id);
@@ -119,7 +120,13 @@ function send(payload) {
 
 function applyState(state) {
   queue = state.queue;
-  index = state.index;
+
+  // O aparelho NÃO obedece ao índice que vem no estado: esse índice é o que ele
+  // próprio reportou, e uma mensagem atrasada punha-o a voltar atrás e a
+  // reportar outra vez, em ciclo. A posição é sempre deduzida da faixa que
+  // está mesmo carregada no player.
+  const found = queue.findIndex(track => track.videoId === currentVideoId);
+  if (found >= 0) index = found;
 
   el("code").textContent = state.roomId;
   el("people").textContent = state.listeners === 1
@@ -128,16 +135,27 @@ function applyState(state) {
   el("warn").textContent = state.notice || "";
 
   renderQueue();
-  const track = queue[index];
-  if (!track) {
+
+  if (!queue.length) {
+    currentVideoId = null;
     el("title").textContent = "Fila vazia";
+    el("channel").textContent = "Manda o código aos teus amigos.";
     return;
   }
+
+  // Carrega por iniciativa própria em dois casos apenas: ainda não há nada a
+  // tocar, ou a faixa que estava a tocar saiu da fila.
+  if (currentVideoId === null || found < 0) {
+    load(Math.min(index, queue.length - 1), unlocked);
+  } else {
+    showTrack(queue[index]);
+  }
+}
+
+function showTrack(track) {
   el("title").textContent = track.title;
   el("channel").textContent = [track.channel, track.addedBy && `posta por ${track.addedBy}`]
     .filter(Boolean).join(" · ");
-
-  if (track.videoId !== currentVideoId) load(index, unlocked);
 }
 
 function runCommand({ action, index: target }) {
@@ -159,11 +177,26 @@ window.onYouTubeIframeAPIReady = () => {
       onStateChange: (event) => {
         playing = event.data === YT.PlayerState.PLAYING;
         el("toggle").innerHTML = playing ? "&#10073;&#10073;" : "&#9654;";
-        if (playing) keepAwake();
+        if (playing) { errorStreak = 0; keepAwake(); }
+
+        if (event.data === YT.PlayerState.ENDED) {
+          // Não reportamos o ENDED: é um estado de passagem, e a mensagem
+          // chegava atrasada com o índice antigo. O skip a seguir reporta já
+          // a faixa nova.
+          skip(1);
+          return;
+        }
         send({ type: "nowPlaying", index, playing });
-        if (event.data === YT.PlayerState.ENDED) skip(1);
       },
-      onError: () => { toast("faixa indisponível, a saltar"); skip(1); },
+      onError: () => {
+        errorStreak += 1;
+        if (errorStreak >= 4) {
+          toast("Quatro faixas seguidas indisponíveis. Parei aqui.");
+          return;
+        }
+        toast("Faixa indisponível, a saltar.");
+        setTimeout(() => skip(1), 800);
+      },
     },
   });
   if (queue.length) load(index, false);
@@ -175,6 +208,7 @@ function load(target, autoplay) {
   currentVideoId = queue[index].videoId;
   autoplay ? player.loadVideoById(currentVideoId) : player.cueVideoById(currentVideoId);
   send({ type: "nowPlaying", index, playing: autoplay });
+  showTrack(queue[index]);
   renderQueue();
 }
 
