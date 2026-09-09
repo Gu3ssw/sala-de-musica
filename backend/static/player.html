@@ -35,6 +35,7 @@
   .join #qr { width: 92px; height: 92px; background: #fff; border-radius: 6px; padding: 6px; flex: none; }
   .join #qr:empty { display: none; }
   .warn { margin: 0 1rem 1rem; font-size: .8rem; color: var(--muted); line-height: 1.45; }
+  .hostadd { padding: .35rem 1rem 1rem; display: grid; gap: .5rem; }
 </style>
 </head>
 <body>
@@ -58,6 +59,14 @@
   <div class="now">
     <h1 id="title">Fila vazia</h1>
     <p id="channel">Manda o código aos teus amigos para eles começarem a pôr músicas.</p>
+  </div>
+
+  <div class="hostadd">
+    <input type="text" id="hostInput" placeholder="Cola um vídeo ou uma playlist do YouTube" autocomplete="off" inputmode="url">
+    <div class="row">
+      <button class="primary grow" id="hostAdd">Pôr na fila</button>
+      <button id="openRemote">Abrir o comando</button>
+    </div>
   </div>
 
   <div class="join">
@@ -186,7 +195,7 @@ window.onYouTubeIframeAPIReady = () => {
           skip(1);
           return;
         }
-        send({ type: "nowPlaying", index, playing });
+        send({ type: "nowPlaying", index, playing, seconds: seconds() });
       },
       onError: () => {
         errorStreak += 1;
@@ -207,10 +216,19 @@ function load(target, autoplay) {
   index = target;
   currentVideoId = queue[index].videoId;
   autoplay ? player.loadVideoById(currentVideoId) : player.cueVideoById(currentVideoId);
-  send({ type: "nowPlaying", index, playing: autoplay });
+  send({ type: "nowPlaying", index, playing: autoplay, seconds: 0 });
   showTrack(queue[index]);
   renderQueue();
 }
+
+function seconds() {
+  try { return player?.getCurrentTime?.() || 0; } catch { return 0; }
+}
+
+// Batida de relógio para quem escolheu ouvir no próprio telemóvel.
+setInterval(() => {
+  if (playing) send({ type: "tick", index, playing, seconds: seconds() });
+}, 5000);
 
 function skip(delta) {
   if (!queue.length) return;
@@ -269,6 +287,20 @@ el("gate").onclick = () => {
 };
 el("prev").onclick = () => skip(-1);
 el("next").onclick = () => skip(1);
+
+// O dono da sala também precisa de pôr músicas sem ir a outro aparelho.
+// Um link com "list=" liga a playlist à sala; qualquer outro entra como faixa.
+el("hostAdd").onclick = () => {
+  const value = el("hostInput").value.trim();
+  if (!value) return;
+  const isPlaylist = /[?&]list=/.test(value) || /^PL[A-Za-z0-9_-]+$/.test(value);
+  send({ type: isPlaylist ? "setPlaylist" : "add", value, who: "o dono da sala" });
+  el("hostInput").value = "";
+};
+el("hostInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") el("hostAdd").click();
+});
+el("openRemote").onclick = () => window.open(remoteUrl, "_blank");
 el("shuffle").onclick = () => send({ type: "shuffle" });
 el("toggle").onclick = () => {
   unlocked = true;

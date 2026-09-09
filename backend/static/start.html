@@ -61,12 +61,15 @@ createButton.onclick = async () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ playlist: playlist.value.trim() || null }),
+      signal: AbortSignal.timeout(45000),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || "Não consegui abrir a sala");
     location.href = `/player?room=${data.roomId}`;
   } catch (error) {
-    createError.textContent = error.message;
+    createError.textContent = error.name === "TimeoutError"
+      ? "O servidor demorou demasiado. Se a playlist é enorme, corta-a; se é um Mix do YouTube, não dá."
+      : error.message;
     createButton.disabled = false;
     createButton.textContent = "Abrir sala e tocar aqui";
   }

@@ -19,6 +19,10 @@
   .results .by { font-size: .76rem; color: var(--muted); margin-top: .15rem; }
   .bar { display: flex; gap: .5rem; padding: .8rem 1rem; border-bottom: 1px solid var(--line); }
   .bar button { flex: 1; }
+  .mirror { padding: .9rem 1rem; border-bottom: 1px solid var(--line); display: grid; gap: .5rem; }
+  .mirror #mirrorStage { background: #000; aspect-ratio: 16 / 9; border-radius: var(--radius); overflow: hidden; }
+  .mirror #mirrorStage iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .mirror button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
   .name-field { padding: 0 1rem 1rem; }
   h2 { font-size: .9rem; padding: 1rem 1rem .3rem; color: var(--muted); font-weight: 500; }
 </style>
@@ -34,6 +38,12 @@
     <button id="prev">&#9664;&#9664;</button>
     <button id="toggle">&#9654; / &#10073;&#10073;</button>
     <button id="next">&#9654;&#9654;</button>
+  </div>
+
+  <div class="mirror">
+    <button class="grow" id="listen">Ouvir também neste telemóvel</button>
+    <p class="small muted" id="mirrorNote">Por omissão o som sai só do aparelho da sala. Se ligares isto, o teu telemóvel toca a mesma faixa em paralelo.</p>
+    <div id="mirrorStage" hidden><div id="mirrorFrame"></div></div>
   </div>
 
   <div class="add">
@@ -55,6 +65,7 @@
 
 <div class="toast" id="toast" hidden></div>
 
+<script src="https://www.youtube.com/iframe_api"></script>
 <script>
 const roomId = (new URLSearchParams(location.search).get("room") || "").toUpperCase();
 const el = id => document.getElementById(id);
@@ -78,6 +89,7 @@ function connect() {
   socket.onmessage = (event) => {
     const data = JSON.parse(event.data);
     if (data.type === "state") applyState(data);
+    else if (data.type === "tick") applyTick(data);
     else if (data.type === "toast" || data.type === "error") toast(data.message);
   };
 }
@@ -109,6 +121,12 @@ function applyState(state) {
       : "Pesquisas esgotadas hoje. Cola o link, que esse caminho é livre.";
   }
   renderQueue();
+  applyTick({
+    index: state.index,
+    playing: state.playing,
+    position: state.position,
+    videoId: track ? track.videoId : null,
+  });
 }
 
 /* ---------- adicionar ---------- */
@@ -151,6 +169,81 @@ async function runSearch(term) {
     toast(error.message);
   }
 }
+
+/* ---------- ouvir neste telemóvel (opcional) ---------- */
+
+// Guarda a última batida do aparelho da sala. Não usamos o relógio do
+// servidor: os relógios dos telemóveis não batem certo entre si. Contamos a
+// partir do instante em que a mensagem chegou aqui.
+let beat = { videoId: null, position: 0, playing: false, at: 0 };
+let mirror = null;
+let mirrorReady = false;
+let mirrorOn = false;
+let mirrorVideoId = null;
+
+function applyTick(tick) {
+  if (!tick || !tick.videoId) return;
+  beat = {
+    videoId: tick.videoId,
+    position: Number(tick.position) || 0,
+    playing: Boolean(tick.playing),
+    at: Date.now(),
+  };
+  syncMirror();
+}
+
+function expectedPosition() {
+  const drift = beat.playing ? (Date.now() - beat.at) / 1000 : 0;
+  return beat.position + drift;
+}
+
+window.onYouTubeIframeAPIReady = () => {
+  mirror = new YT.Player("mirrorFrame", {
+    host: "https://www.youtube-nocookie.com",
+    playerVars: { playsinline: 1, rel: 0, modestbranding: 1, controls: 0 },
+    events: {
+      onReady: () => { mirrorReady = true; syncMirror(); },
+      onError: () => toast("Esta faixa não deixa tocar aqui. Continua a dar na sala."),
+    },
+  });
+};
+
+function syncMirror() {
+  if (!mirrorOn || !mirrorReady || !beat.videoId) return;
+
+  if (beat.videoId !== mirrorVideoId) {
+    mirrorVideoId = beat.videoId;
+    mirror.loadVideoById({ videoId: beat.videoId, startSeconds: expectedPosition() });
+    return;
+  }
+  if (!beat.playing) {
+    mirror.pauseVideo();
+    return;
+  }
+  let here = 0;
+  try { here = mirror.getCurrentTime() || 0; } catch { return; }
+  if (Math.abs(here - expectedPosition()) > 2.5) mirror.seekTo(expectedPosition(), true);
+  if (mirror.getPlayerState() !== YT.PlayerState.PLAYING) mirror.playVideo();
+}
+
+setInterval(syncMirror, 3000);
+
+el("listen").onclick = () => {
+  mirrorOn = !mirrorOn;
+  el("listen").classList.toggle("on", mirrorOn);
+  el("listen").textContent = mirrorOn ? "Parar de ouvir aqui" : "Ouvir também neste telemóvel";
+  el("mirrorStage").hidden = !mirrorOn;
+  el("mirrorNote").textContent = mirrorOn
+    ? "Se estiveres ao pé da coluna vais ouvir em eco. Baixa o volume de um dos dois."
+    : "Por omissão o som sai só do aparelho da sala. Se ligares isto, o teu telemóvel toca a mesma faixa em paralelo.";
+
+  if (mirrorOn) {
+    mirrorVideoId = null;
+    syncMirror();
+  } else if (mirrorReady) {
+    mirror.pauseVideo();
+  }
+};
 
 /* ---------- controlos e fila ---------- */
 

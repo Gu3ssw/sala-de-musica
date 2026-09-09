@@ -10,6 +10,7 @@ acrescentam músicas. Tudo em tempo real por WebSocket.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import random
 import re
@@ -25,9 +26,15 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+log = logging.getLogger("sala")
+
 API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 API_BASE = "https://www.googleapis.com/youtube/v3"
 POLL_SECONDS = float(os.getenv("POLL_SECONDS", "45"))
+
+# Rede de segurança: 20 páginas de 50 são 1000 faixas. Impede que uma playlist
+# sem fim (os Mix do YouTube) deixe o pedido a paginar para sempre.
+MAX_PAGES = int(os.getenv("MAX_PAGES", "20"))
 
 # Contas de quota: playlistItems.list e videos.list custam 1 unidade cada,
 # mas search.list custa 100. Com 10 000 unidades por dia, são só 100 pesquisas.
@@ -50,6 +57,18 @@ def normalize_playlist_id(value: str) -> str:
         value = found[0] if found else ""
     if not re.fullmatch(r"[A-Za-z0-9_-]{2,64}", value):
         raise HTTPException(400, "ID de playlist inválido")
+    if value.startswith("RD"):
+        raise HTTPException(
+            400,
+            "Isso é um Mix ou rádio do YouTube: é gerado na hora e não tem fim, "
+            "por isso a API nunca para de dar páginas. Usa uma playlist normal, "
+            "com o ID a começar por PL.",
+        )
+    if value in {"LL", "WL"}:
+        raise HTTPException(
+            400,
+            "As tuas 'Gostadas' e 'Ver mais tarde' são privadas, e uma chave de API não lhes chega.",
+        )
     return value
 
 
@@ -80,6 +99,7 @@ async def youtube_get(path: str, params: dict) -> dict:
         raise RuntimeError("Chave sem permissões ou quota diária esgotada")
     if response.status_code == 404:
         raise RuntimeError("Não encontrado no YouTube")
+    log.info("youtube %s %s -> %s", path, {k: v for k, v in params.items() if k != "key"}, response.status_code)
     response.raise_for_status()
     return response.json()
 
@@ -101,6 +121,7 @@ def track_from_snippet(video_id: str, snippet: dict, source: str, added_by: str 
 async def fetch_playlist_items(playlist_id: str) -> list[dict]:
     tracks: list[dict] = []
     page_token: str | None = None
+    pages = 0
     while True:
         params = {
             "part": "snippet,contentDetails",
@@ -117,8 +138,10 @@ async def fetch_playlist_items(playlist_id: str) -> list[dict]:
             tracks.append(
                 track_from_snippet(item["contentDetails"]["videoId"], snippet, "playlist")
             )
+        pages += 1
+        log.info("playlist %s: página %s, %s faixas", playlist_id, pages, len(tracks))
         page_token = payload.get("nextPageToken")
-        if not page_token:
+        if not page_token or pages >= MAX_PAGES:
             break
     return tracks
 
@@ -198,6 +221,8 @@ class Room:
         self.queue: list[dict] = []
         self.index = 0
         self.playing = False
+        self.position = 0.0  # segundos dentro da faixa, reportados pelo aparelho
+        self.position_at = time.time()
         self.notice: str | None = None
         self.revision = 0
         self.clients: dict[WebSocket, str] = {}  # ws -> "player" | "remote"
@@ -215,6 +240,8 @@ class Room:
             "revision": self.revision,
             "index": self.index,
             "playing": self.playing,
+            "position": self.position,
+            "positionAt": self.position_at,
             "queue": self.queue,
             "notice": self.notice,
             "hasPlayer": any(role == "player" for role in self.clients.values()),
@@ -489,6 +516,24 @@ async def handle_message(room: Room, role: str, message: dict) -> None:
             track["addedBy"] = message.get("who", "alguém")
             await room.broadcast({"type": "toast", "message": await room.add(track)})
 
+    elif kind == "setPlaylist":
+        try:
+            playlist_id = normalize_playlist_id(message.get("value", ""))
+        except HTTPException as exc:
+            await room.broadcast({"type": "toast", "message": exc.detail})
+            return
+        room.playlist_id = playlist_id
+        room.notice = None
+        await room.refresh_playlist()
+        await room.ensure_started()
+        await room.broadcast(
+            {
+                "type": "toast",
+                "message": room.notice or f"Playlist ligada: {len(room.queue)} faixas na fila.",
+            }
+        )
+        await room.broadcast()
+
     elif kind == "remove":
         await room.remove(message.get("videoId", ""))
 
@@ -508,5 +553,29 @@ async def handle_message(room: Room, role: str, message: dict) -> None:
         if isinstance(index, int) and 0 <= index < len(room.queue):
             room.index = index
         room.playing = bool(message.get("playing"))
+        room.position = float(message.get("seconds") or 0)
+        room.position_at = time.time()
         room.touched_at = time.time()
         await room.broadcast()
+
+    elif kind == "tick" and role == "player":
+        # Batida de relógio a cada poucos segundos, só para os telemóveis que
+        # escolheram ouvir localmente se manterem alinhados. Não leva a fila
+        # inteira atrás, que seria desperdício.
+        index = message.get("index")
+        if isinstance(index, int) and 0 <= index < len(room.queue):
+            room.index = index
+        room.playing = bool(message.get("playing"))
+        room.position = float(message.get("seconds") or 0)
+        room.position_at = time.time()
+        room.touched_at = time.time()
+        await room.broadcast(
+            {
+                "type": "tick",
+                "index": room.index,
+                "playing": room.playing,
+                "position": room.position,
+                "videoId": room.current_video_id(),
+            },
+            only="remote",
+        )
