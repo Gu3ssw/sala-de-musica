@@ -41,8 +41,8 @@
   </div>
 
   <div class="mirror">
-    <button class="grow" id="listen">Ouvir também neste telemóvel</button>
-    <p class="small muted" id="mirrorNote">Por omissão o som sai só do aparelho da sala. Se ligares isto, o teu telemóvel toca a mesma faixa em paralelo.</p>
+    <button class="grow" id="listen">Ouvir também neste dispositivo</button>
+    <p class="small muted" id="mirrorNote">Por omissão o som sai só do dispositivo host. Se ligares isto, o teu dispositivo toca a mesma faixa em paralelo.</p>
     <div id="mirrorStage" hidden><div id="mirrorFrame"></div></div>
   </div>
 
@@ -55,7 +55,7 @@
   </div>
 
   <div class="name-field">
-    <p class="small muted" style="margin:.9rem 0 .4rem">O teu nome, para se saber a culpa de quem é</p>
+    <p class="small muted" style="margin:.9rem 0 .4rem">O teu nome, para se saber de quem é a culpa</p>
     <input type="text" id="who" placeholder="o teu nome" maxlength="20" autocomplete="off">
   </div>
 
@@ -231,11 +231,11 @@ setInterval(syncMirror, 3000);
 el("listen").onclick = () => {
   mirrorOn = !mirrorOn;
   el("listen").classList.toggle("on", mirrorOn);
-  el("listen").textContent = mirrorOn ? "Parar de ouvir aqui" : "Ouvir também neste telemóvel";
+  el("listen").textContent = mirrorOn ? "Parar de ouvir aqui" : "Ouvir também neste dispositivo";
   el("mirrorStage").hidden = !mirrorOn;
   el("mirrorNote").textContent = mirrorOn
-    ? "Se estiveres ao pé da coluna vais ouvir em eco. Baixa o volume de um dos dois."
-    : "Por omissão o som sai só do aparelho da sala. Se ligares isto, o teu telemóvel toca a mesma faixa em paralelo.";
+    ? "Se estiveres ao pé do host vais ouvir em eco. Baixa o volume de um dos dois."
+    : "Por omissão o som sai só do dispositivo host. Se ligares isto, o teu dispositivo toca a mesma faixa em paralelo.";
 
   if (mirrorOn) {
     mirrorVideoId = null;
