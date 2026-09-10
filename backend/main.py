@@ -207,6 +207,22 @@ async def search_videos(query: str, limit: int = 8) -> list[dict]:
 # Sala
 # --------------------------------------------------------------------------- #
 
+def clean_name(value: object) -> str:
+    """Nomes vêm do cliente, por isso são cortados e limpos antes de circular."""
+    text = " ".join(str(value or "").split())
+    return text[:20]
+
+
+class Member:
+    """Quem está ligado à sala: o aparelho que toca, ou uma pessoa."""
+
+    __slots__ = ("role", "name")
+
+    def __init__(self, role: str, name: str = "") -> None:
+        self.role = role
+        self.name = name
+
+
 class Room:
     """Estado partilhado de uma sala.
 
@@ -225,7 +241,7 @@ class Room:
         self.position_at = time.time()
         self.notice: str | None = None
         self.revision = 0
-        self.clients: dict[WebSocket, str] = {}  # ws -> "player" | "remote"
+        self.clients: dict[WebSocket, Member] = {}
         self.touched_at = time.time()
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
@@ -244,8 +260,13 @@ class Room:
             "positionAt": self.position_at,
             "queue": self.queue,
             "notice": self.notice,
-            "hasPlayer": any(role == "player" for role in self.clients.values()),
-            "listeners": sum(1 for role in self.clients.values() if role == "remote"),
+            "hasPlayer": any(member.role == "player" for member in self.clients.values()),
+            "listeners": sum(1 for member in self.clients.values() if member.role == "remote"),
+            "people": [
+                member.name or "anónimo"
+                for member in self.clients.values()
+                if member.role == "remote"
+            ],
             "searchesLeft": search_budget.remaining,
         }
 
@@ -255,8 +276,8 @@ class Room:
 
     async def broadcast(self, payload: dict | None = None, only: str | None = None) -> None:
         message = payload or self.state()
-        for client, role in list(self.clients.items()):
-            if only and role != only:
+        for client, member in list(self.clients.items()):
+            if only and member.role != only:
                 continue
             try:
                 await client.send_json(message)
@@ -471,17 +492,27 @@ async def room_socket(websocket: WebSocket, room_id: str):
 
     room = rooms.get(room_id.upper())
     if room is None:
-        await websocket.send_json({"type": "error", "message": "Sala não encontrada"})
-        await websocket.close()
-        return
+        # O servidor reinicia a cada deploy e as salas vivem em memória. Em vez
+        # de deixar toda a gente em ciclo de reconexão, a sala é recriada com o
+        # mesmo código e o aparelho que toca repõe a fila logo a seguir.
+        code = room_id.upper()
+        if not re.fullmatch(r"[A-Z0-9]{4}", code):
+            await websocket.send_json({"type": "error", "message": "Código de sala inválido"})
+            await websocket.close()
+            return
+        room = Room(code)
+        rooms[code] = room
 
-    room.clients[websocket] = role
+    member = Member(role, clean_name(websocket.query_params.get("name")))
+    if role == "player" and not member.name:
+        member.name = "o dono da sala"
+    room.clients[websocket] = member
     try:
         await room.ensure_started()
         await websocket.send_json(room.state())
         await room.broadcast()  # os outros passam a ver que entrou alguém
         while True:
-            await handle_message(room, role, await websocket.receive_json())
+            await handle_message(room, member, await websocket.receive_json())
     except WebSocketDisconnect:
         pass
     except Exception as exc:  # JSON inválido, cliente estranho
@@ -494,8 +525,14 @@ async def room_socket(websocket: WebSocket, room_id: str):
             room.stop()
 
 
-async def handle_message(room: Room, role: str, message: dict) -> None:
+async def handle_message(room: Room, member: Member, message: dict) -> None:
     kind = message.get("type")
+    role = member.role
+
+    if kind == "hello":  # a pessoa apresenta-se ao entrar
+        member.name = clean_name(message.get("name"))
+        await room.broadcast()
+        return
 
     if kind == "add":
         video_id = extract_video_id(message.get("value", ""))
@@ -503,7 +540,7 @@ async def handle_message(room: Room, role: str, message: dict) -> None:
             await room.broadcast({"type": "toast", "message": "Esse link não parece do YouTube."})
             return
         try:
-            track = await fetch_video(video_id, message.get("who", "alguém"))
+            track = await fetch_video(video_id, member.name or "anónimo")
         except Exception as exc:
             await room.broadcast({"type": "toast", "message": str(exc)})
             return
@@ -513,7 +550,7 @@ async def handle_message(room: Room, role: str, message: dict) -> None:
         track = message.get("track") or {}
         if extract_video_id(track.get("videoId", "")):
             track["source"] = "added"
-            track["addedBy"] = message.get("who", "alguém")
+            track["addedBy"] = member.name or "anónimo"
             await room.broadcast({"type": "toast", "message": await room.add(track)})
 
     elif kind == "setPlaylist":
@@ -531,6 +568,43 @@ async def handle_message(room: Room, role: str, message: dict) -> None:
                 "type": "toast",
                 "message": room.notice or f"Playlist ligada: {len(room.queue)} faixas na fila.",
             }
+        )
+        await room.broadcast()
+
+    elif kind == "restore" and role == "player":
+        # Só repõe uma sala vazia: nunca sobrepõe o que já lá estiver.
+        if room.queue:
+            return
+        restored: list[dict] = []
+        for item in (message.get("tracks") or [])[:500]:
+            video_id = extract_video_id(str(item.get("videoId", "")))
+            if not video_id:
+                continue
+            restored.append(
+                {
+                    "videoId": video_id,
+                    "title": str(item.get("title", ""))[:200],
+                    "channel": str(item.get("channel", ""))[:120],
+                    "thumbnail": str(item.get("thumbnail", ""))[:400],
+                    "source": "playlist" if item.get("source") == "playlist" else "added",
+                    "addedBy": str(item.get("addedBy", ""))[:40],
+                    "addedAt": time.time(),
+                }
+            )
+        if not restored:
+            return
+        room.queue = restored
+        playlist = message.get("playlist")
+        if playlist:
+            try:
+                room.playlist_id = normalize_playlist_id(str(playlist))
+            except HTTPException:
+                pass
+        room.bump()
+        await room.ensure_started()
+        log.info("sala %s reposta com %s faixas", room.id, len(restored))
+        await room.broadcast(
+            {"type": "toast", "message": "O servidor reiniciou. Fila reposta."}
         )
         await room.broadcast()
 
