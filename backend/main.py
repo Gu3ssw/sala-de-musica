@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -424,7 +424,19 @@ class CreateRoom(BaseModel):
 
 @app.get("/")
 async def root():
-    return RedirectResponse("/static/start.html")
+    return _static_file("start.html")
+
+
+@app.get("/p/{room_id}")
+async def player_short(room_id: str):
+    """Endereço curto do aparelho que toca: /p/ABCD"""
+    return _static_file("player.html")
+
+
+@app.get("/r/{room_id}")
+async def remote_short(room_id: str):
+    """Endereço curto para os amigos: /r/ABCD — dá um QR code mais simples."""
+    return _static_file("remote.html")
 
 
 @app.get("/health")
