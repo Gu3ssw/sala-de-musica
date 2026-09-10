@@ -200,7 +200,7 @@ function expectedPosition() {
 window.onYouTubeIframeAPIReady = () => {
   mirror = new YT.Player("mirrorFrame", {
     host: "https://www.youtube-nocookie.com",
-    playerVars: { playsinline: 1, rel: 0, modestbranding: 1, controls: 0 },
+    playerVars: { playsinline: 1, rel: 0, modestbranding: 1, controls: 1, fs: 1},
     events: {
       onReady: () => { mirrorReady = true; syncMirror(); },
       onError: () => toast("Esta faixa não deixa tocar aqui. Continua a dar na sala."),
