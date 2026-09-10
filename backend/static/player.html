@@ -6,6 +6,13 @@
 <title>A tocar</title>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="manifest" href="/static/manifest.json">
+<meta name="theme-color" content="#0e1626">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<link rel="icon" href="/static/icon-192.png">
 <link rel="stylesheet" href="/static/app.css">
 <style>
   .stage { position: relative; background: #000; aspect-ratio: 16 / 9; }
@@ -99,6 +106,7 @@ let currentVideoId = null;
 let unlocked = false;
 let playing = false;
 let errorStreak = 0;
+let lastPlaylistId = null;
 let wakeLock = null;
 
 const el = id => document.getElementById(id);
@@ -128,6 +136,15 @@ function send(payload) {
 }
 
 function applyState(state) {
+  // Se voltámos a ligar e a sala está vazia mas este aparelho ainda tem a fila
+  // na página, o servidor reiniciou. Reenviamos o que temos em vez de perder
+  // a noite toda.
+  if (!state.queue.length && queue.length) {
+    send({ type: "restore", tracks: queue, playlist: state.playlistId || lastPlaylistId });
+    return;
+  }
+  if (state.playlistId) lastPlaylistId = state.playlistId;
+
   queue = state.queue;
 
   // O aparelho NÃO obedece ao índice que vem no estado: esse índice é o que ele
@@ -137,10 +154,11 @@ function applyState(state) {
   const found = queue.findIndex(track => track.videoId === currentVideoId);
   if (found >= 0) index = found;
 
+  const people = state.people || [];
   el("code").textContent = state.roomId;
-  el("people").textContent = state.listeners === 1
-    ? "1 pessoa ligada"
-    : `${state.listeners} pessoas ligadas`;
+  el("people").textContent = people.length
+    ? (people.length === 1 ? `1 pessoa: ${people[0]}` : `${people.length} pessoas: ${people.join(", ")}`)
+    : "ninguém ligado ainda";
   el("warn").textContent = state.notice || "";
 
   renderQueue();
@@ -268,10 +286,10 @@ function renderQueue() {
 
     const drop = row.querySelector(".drop");
     if (position === index) {
-      drop.remove();
+      drop.remove();  // não se tira o chão a quem está a tocar
     } else {
       drop.onclick = (event) => {
-        event.stopPropagation();
+        event.stopPropagation();  // senão o clique também punha a faixa a tocar
         send({ type: "remove", videoId: track.videoId });
       };
     }

@@ -6,6 +6,13 @@
 <title>Pôr música</title>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="manifest" href="/static/manifest.json">
+<meta name="theme-color" content="#0e1626">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<link rel="icon" href="/static/icon-192.png">
 <link rel="stylesheet" href="/static/app.css">
 <style>
   .top { padding: 1.1rem 1rem .9rem; border-bottom: 1px solid var(--line); }
@@ -23,12 +30,32 @@
   .mirror #mirrorStage { background: #000; aspect-ratio: 16 / 9; border-radius: var(--radius); overflow: hidden; }
   .mirror #mirrorStage iframe { width: 100%; height: 100%; border: 0; display: block; }
   .mirror button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .mirror #mirrorControls button { min-width: 46px; }
+  .mirror input[type="range"] { accent-color: var(--accent); background: none; border: 0; padding: 0; }
+  .mirror #mirrorStage:fullscreen { aspect-ratio: auto; height: 100%; width: 100%; border-radius: 0; }
   .name-field { padding: 0 1rem 1rem; }
+  .gate {
+    position: fixed; inset: 0; z-index: 10; background: var(--base);
+    display: grid; place-items: center; padding: 1.5rem;
+  }
+  .gate[hidden] { display: none; }
+  .gatebox { width: 100%; max-width: 340px; display: grid; gap: .8rem; }
+  .gatebox h2 { font-size: 1.3rem; }
   h2 { font-size: .9rem; padding: 1rem 1rem .3rem; color: var(--muted); font-weight: 500; }
 </style>
 </head>
 <body>
-<div class="shell">
+<div class="gate" id="nameGate">
+  <div class="gatebox">
+    <h2>Quem és tu?</h2>
+    <p class="small muted">O teu nome aparece ao lado das músicas que puseres, e na lista de quem está na sala.</p>
+    <input type="text" id="nameInput" placeholder="o teu nome" maxlength="20" autocomplete="name">
+    <button class="primary" id="enter">Entrar na sala</button>
+    <p class="small" id="nameError" style="color:var(--accent); min-height:1.2em"></p>
+  </div>
+</div>
+
+<div class="shell" id="app" hidden>
   <div class="top">
     <p class="small muted">Sala <span class="code" id="code">····</span> · <span id="status">a ligar…</span></p>
     <p class="nowline" id="now">—</p>
@@ -41,9 +68,16 @@
   </div>
 
   <div class="mirror">
-    <button class="grow" id="listen">Ouvir também neste dispositivo</button>
-    <p class="small muted" id="mirrorNote">Por omissão o som sai só do dispositivo host. Se ligares isto, o teu dispositivo toca a mesma faixa em paralelo.</p>
-    <div id="mirrorStage" hidden><div id="mirrorFrame"></div></div>
+    <button class="grow" id="listen">Ouvir também neste telemóvel</button>
+    <p class="small muted" id="mirrorNote">Por omissão o som sai só do aparelho da sala. Se ligares isto, o teu telemóvel toca a mesma faixa em paralelo.</p>
+    <div id="mirrorStage" hidden>
+      <div id="mirrorFrame"></div>
+    </div>
+    <div class="row" id="mirrorControls" hidden>
+      <button id="mute" aria-label="Silenciar">&#128266;</button>
+      <input type="range" id="volume" class="grow" min="0" max="100" value="70" aria-label="Volume">
+      <button id="fullscreen" aria-label="Ecrã inteiro">&#9974;</button>
+    </div>
   </div>
 
   <div class="add">
@@ -55,8 +89,11 @@
   </div>
 
   <div class="name-field">
-    <p class="small muted" style="margin:.9rem 0 .4rem">O teu nome, para se saber de quem é a culpa</p>
-    <input type="text" id="who" placeholder="o teu nome" maxlength="20" autocomplete="off">
+    <div class="row">
+      <p class="small muted grow" id="people">ninguém ligado</p>
+      <button id="rename">Mudar de nome</button>
+    </div>
+    <p class="small" id="peopleList" style="margin-top:.4rem"></p>
   </div>
 
   <h2>Na fila</h2>
@@ -74,17 +111,45 @@ let socket = null;
 let queue = [];
 let index = 0;
 let playing = false;
+let myName = localStorage.getItem("who") || "";
 
-el("who").value = localStorage.getItem("who") || "";
-el("who").oninput = () => localStorage.setItem("who", el("who").value.trim());
-const who = () => el("who").value.trim() || "anónimo";
+/* ---------- porta de entrada ---------- */
+
+el("nameInput").value = myName;
+
+function enterRoom() {
+  const value = el("nameInput").value.trim().slice(0, 20);
+  if (value.length < 2) {
+    el("nameError").textContent = "Escreve pelo menos duas letras.";
+    return;
+  }
+  myName = value;
+  localStorage.setItem("who", myName);
+  el("nameError").textContent = "";
+  el("nameGate").hidden = true;
+  el("app").hidden = false;
+
+  if (socket && socket.readyState === WebSocket.OPEN) send({ type: "hello", name: myName });
+  else connect();
+}
+
+el("enter").onclick = enterRoom;
+el("nameInput").addEventListener("keydown", e => { if (e.key === "Enter") enterRoom(); });
+el("rename").onclick = () => {
+  el("nameInput").value = myName;
+  el("nameGate").hidden = false;
+  el("nameInput").focus();
+};
 
 /* ---------- ligação ---------- */
 
 function connect() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   socket = new WebSocket(`${scheme}://${location.host}/ws/room/${roomId}`);
-  socket.onopen = () => { el("status").textContent = "ligado"; };
+  socket.onopen = () => {
+    el("status").textContent = "ligado";
+    send({ type: "hello", name: myName });  // também nas reconexões
+  };
   socket.onclose = () => { el("status").textContent = "sem ligação"; setTimeout(connect, 3000); };
   socket.onmessage = (event) => {
     const data = JSON.parse(event.data);
@@ -120,6 +185,14 @@ function applyState(state) {
       ? `${state.searchesLeft} pesquisas disponíveis hoje. Colar o link não gasta nenhuma.`
       : "Pesquisas esgotadas hoje. Cola o link, que esse caminho é livre.";
   }
+  const people = state.people || [];
+  el("people").textContent = people.length === 1
+    ? "1 pessoa na sala"
+    : `${people.length} pessoas na sala`;
+  el("peopleList").textContent = people.length
+    ? people.map(name => (name === myName ? `${name} (tu)` : name)).join(" · ")
+    : "";
+
   renderQueue();
   applyTick({
     index: state.index,
@@ -134,7 +207,7 @@ function applyState(state) {
 el("addLink").onclick = () => {
   const value = el("link").value.trim();
   if (!value) return;
-  send({ type: "add", value, who: who() });
+  send({ type: "add", value });
   el("link").value = "";
 };
 el("link").addEventListener("keydown", e => { if (e.key === "Enter") el("addLink").click(); });
@@ -159,7 +232,7 @@ async function runSearch(term) {
       row.querySelector(".name").textContent = track.title;
       row.querySelector(".by").textContent = track.channel;
       row.querySelector("button").onclick = () => {
-        send({ type: "addTrack", track, who: who() });
+        send({ type: "addTrack", track });
         el("query").value = "";
         el("results").replaceChildren();
       };
@@ -200,9 +273,13 @@ function expectedPosition() {
 window.onYouTubeIframeAPIReady = () => {
   mirror = new YT.Player("mirrorFrame", {
     host: "https://www.youtube-nocookie.com",
-    playerVars: { playsinline: 1, rel: 0, modestbranding: 1, controls: 1, fs: 1},
+    playerVars: { playsinline: 1, rel: 0, modestbranding: 1, controls: 1, fs: 1 },
     events: {
-      onReady: () => { mirrorReady = true; syncMirror(); },
+      onReady: () => {
+        mirrorReady = true;
+        applyVolume();
+        syncMirror();
+      },
       onError: () => toast("Esta faixa não deixa tocar aqui. Continua a dar na sala."),
     },
   });
@@ -228,14 +305,56 @@ function syncMirror() {
 
 setInterval(syncMirror, 3000);
 
+/* Volume e ecrã inteiro do player local.
+   Nos telemóveis o iOS ignora setVolume — lá o volume são mesmo os botões
+   do aparelho — por isso o botão de silenciar é o que funciona em todo o lado. */
+
+let muted = false;
+el("volume").value = localStorage.getItem("volume") || "70";
+
+function applyVolume() {
+  if (!mirrorReady) return;
+  try {
+    mirror.setVolume(Number(el("volume").value));
+    muted ? mirror.mute() : mirror.unMute();
+  } catch { /* o player ainda não aceita comandos */ }
+}
+
+el("volume").oninput = () => {
+  localStorage.setItem("volume", el("volume").value);
+  if (muted) { muted = false; el("mute").textContent = "🔊"; }
+  applyVolume();
+};
+
+el("mute").onclick = () => {
+  muted = !muted;
+  el("mute").textContent = muted ? "🔇" : "🔊";
+  el("mute").classList.toggle("on", muted);
+  applyVolume();
+};
+
+el("fullscreen").onclick = () => {
+  const stage = el("mirrorStage");
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else if (stage.requestFullscreen) {
+    stage.requestFullscreen().catch(() => toast("O teu browser não deixou pôr em ecrã inteiro."));
+  } else if (stage.webkitRequestFullscreen) {
+    stage.webkitRequestFullscreen();  // Safari mais antigo
+  } else {
+    toast("Ecrã inteiro não suportado aqui. Usa o botão dentro do próprio vídeo.");
+  }
+};
+
 el("listen").onclick = () => {
   mirrorOn = !mirrorOn;
   el("listen").classList.toggle("on", mirrorOn);
-  el("listen").textContent = mirrorOn ? "Parar de ouvir aqui" : "Ouvir também neste dispositivo";
+  el("listen").textContent = mirrorOn ? "Parar de ouvir aqui" : "Ouvir também neste telemóvel";
   el("mirrorStage").hidden = !mirrorOn;
+  el("mirrorControls").hidden = !mirrorOn;
   el("mirrorNote").textContent = mirrorOn
-    ? "Se estiveres ao pé do host vais ouvir em eco. Baixa o volume de um dos dois."
-    : "Por omissão o som sai só do dispositivo host. Se ligares isto, o teu dispositivo toca a mesma faixa em paralelo.";
+    ? "Se estiveres ao pé da coluna vais ouvir em eco. Baixa o volume de um dos dois."
+    : "Por omissão o som sai só do aparelho da sala. Se ligares isto, o teu telemóvel toca a mesma faixa em paralelo.";
 
   if (mirrorOn) {
     mirrorVideoId = null;
@@ -280,10 +399,14 @@ function toast(message) {
 }
 
 if (!roomId) {
+  el("nameGate").hidden = true;
+  el("app").hidden = false;
   el("now").textContent = "Falta o código da sala.";
 } else {
   el("code").textContent = roomId;
-  connect();
+  // Quem já entrou antes neste telemóvel passa direto; os outros veem a porta.
+  if (myName) enterRoom();
+  else el("nameInput").focus();
 }
 </script>
 </body>
