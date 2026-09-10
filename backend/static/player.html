@@ -260,11 +260,22 @@ function renderQueue() {
     const row = document.createElement("li");
     row.className = "tappable";
     row.setAttribute("aria-current", String(position === index));
-    row.innerHTML = '<span class="idx"></span><span class="name"></span><span></span><span class="by"></span>';
+    row.innerHTML = '<span class="idx"></span><span class="name"></span><button class="drop" aria-label="Tirar da fila">&times;</button><span class="by"></span>';
     row.querySelector(".idx").textContent = position + 1;
     row.querySelector(".name").textContent = track.title;
     row.querySelector(".by").textContent =
       [track.channel, track.addedBy && `posta por ${track.addedBy}`].filter(Boolean).join(" · ");
+
+    const drop = row.querySelector(".drop");
+    if (position === index) {
+      drop.remove();
+    } else {
+      drop.onclick = (event) => {
+        event.stopPropagation();
+        send({ type: "remove", videoId: track.videoId });
+      };
+    }
+
     row.onclick = () => { unlocked = true; el("gate").hidden = true; load(position, true); };
     return row;
   }));
